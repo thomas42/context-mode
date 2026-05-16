@@ -12,7 +12,7 @@ import { readFileSync, existsSync, accessSync, constants, mkdirSync, writeFileSy
 import { resolve, join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { toUnixPath } from "../../src/cli.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -55,6 +55,32 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     // No shebang on any other line (would cause SyntaxError)
     const shebangsAfterLine1 = lines.slice(1).filter(l => l.startsWith("#!"));
     expect(shebangsAfterLine1).toHaveLength(0);
+  });
+
+  it("cli.bundle.mjs --help prints CLI usage instead of starting the MCP server", () => {
+    const result = spawnSync(process.execPath, [resolve(ROOT, "cli.bundle.mjs"), "--help"], {
+      encoding: "utf-8",
+      timeout: 2000,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("context-mode doctor");
+    expect(result.stdout).toContain("context-mode insight --port PORT");
+    expect(result.stdout).toContain("ctx stats");
+    expect(result.stderr).toBe("");
+  });
+
+  it("cli.bundle.mjs --version prints the package version", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    const result = spawnSync(process.execPath, [resolve(ROOT, "cli.bundle.mjs"), "--version"], {
+      encoding: "utf-8",
+      timeout: 2000,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(pkg.version);
+    expect(result.stderr).toBe("");
   });
 
   // ── Source code contracts ──────────────────────────────────

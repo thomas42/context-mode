@@ -4,8 +4,11 @@
  *
  * Usage:
  *   context-mode                              → Start MCP server (stdio)
+ *   context-mode --help                       → Show CLI usage
+ *   context-mode --version                    → Show installed version
  *   context-mode doctor                       → Diagnose runtime issues, hooks, FTS5, version
  *   context-mode upgrade                      → Fix hooks, permissions, and settings
+ *   context-mode insight [port|--port <port>] → Open analytics dashboard
  *   context-mode hook <platform> <event>      → Dispatch a hook script (used by platform hook configs)
  *
  * Platform auto-detection: CLI detects which platform is running
@@ -28,6 +31,7 @@ import {
 } from "./runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
+import { parseInsightPort } from "./util/insight-port.js";
 // v1.0.128 — Issue #559 sibling MCP kill helpers (see PR-559-560-FIX-DESIGN.md).
 import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mcp.js";
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
@@ -140,7 +144,11 @@ async function hookDispatch(platform: string, event: string): Promise<void> {
 
 const args = process.argv.slice(2);
 
-if (args[0] === "doctor") {
+if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
+  printHelp();
+} else if (args[0] === "--version" || args[0] === "-v" || args[0] === "version") {
+  console.log(getCliVersion());
+} else if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
   // Issue #542 — accept --platform <id> from the ctx_upgrade MCP handler,
@@ -161,7 +169,13 @@ if (args[0] === "doctor") {
 } else if (args[0] === "hook") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
-  insight(args[1] ? Number(args[1]) : 4747);
+  try {
+    insight(parseInsightPort(args.slice(1)));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(message);
+    process.exit(1);
+  }
 } else if (args[0] === "statusline") {
   // Status line implementation lives in bin/statusline.mjs to keep it
   // dependency-free and fast. Forward stdin and exit with its result.
@@ -259,6 +273,37 @@ function defaultPluginRoot(): string {
     return resolve(__dirname, "..");
   }
   return __dirname;
+}
+
+function getCliVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(defaultPluginRoot(), "package.json"), "utf-8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function printHelp(): void {
+  console.log(`context-mode ${getCliVersion()}
+
+Usage:
+  context-mode                         Start MCP server on stdio
+  context-mode doctor                  Diagnose runtimes, hooks, FTS5, versions
+  context-mode upgrade [--platform ID] Update hooks and installed plugin files
+  context-mode insight [PORT]          Open Insight dashboard (default 4747)
+  context-mode insight --port PORT     Open Insight dashboard on PORT
+  context-mode hook PLATFORM EVENT     Dispatch a platform hook
+  context-mode statusline              Render status-line summary
+  context-mode --version               Print version
+  context-mode --help                  Show this help
+
+AI-session commands:
+  ctx stats
+  ctx doctor
+  ctx upgrade
+  ctx purge
+  ctx insight`);
 }
 
 // Opencode/Kilocode install plugins from npm into a per-package cache folder.

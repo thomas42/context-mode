@@ -15,14 +15,20 @@ import { homedir } from "node:os";
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-  return { ...actual, existsSync: vi.fn() };
+  return { ...actual, existsSync: vi.fn(), readFileSync: vi.fn() };
 });
 
 // Imports after vi.mock so the mock is in place before detect.ts resolves fs.
 import * as fs from "node:fs";
-import { detectPlatform, PLATFORM_ENV_VARS } from "../../src/adapters/detect.js";
+import {
+  __resetClaudeCodePluginCacheForTests,
+  __resetOpenCodeConfigCacheForTests,
+  detectPlatform,
+  PLATFORM_ENV_VARS,
+} from "../../src/adapters/detect.js";
 
 const existsSyncMock = vi.mocked(fs.existsSync);
+const readFileSyncMock = vi.mocked(fs.readFileSync);
 
 // Derived from detect.ts's source-of-truth list so renames can't drift.
 const ALL_PLATFORM_ENV_VARS = [
@@ -38,11 +44,17 @@ describe("detectPlatform — config directory branches", () => {
     savedEnv = { ...process.env };
     for (const v of ALL_PLATFORM_ENV_VARS) delete process.env[v];
     existsSyncMock.mockReset();
+    readFileSyncMock.mockReset();
+    __resetClaudeCodePluginCacheForTests();
+    __resetOpenCodeConfigCacheForTests();
   });
 
   afterEach(() => {
     process.env = savedEnv;
     existsSyncMock.mockReset();
+    readFileSyncMock.mockReset();
+    __resetClaudeCodePluginCacheForTests();
+    __resetOpenCodeConfigCacheForTests();
   });
 
   const forceDir = (target: string) => {
@@ -92,6 +104,134 @@ describe("detectPlatform — config directory branches", () => {
         p === resolve(home, ".claude") || p === resolve(home, ".gemini")) as typeof fs.existsSync
     ));
     expect(detectPlatform().platform).toBe("claude-code");
+  });
+
+
+  it("prefers OpenCode config with context-mode plugin over bare ~/.claude compatibility dir", () => {
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    readFileSyncMock.mockImplementation(((p: unknown) => {
+      if (p === resolve(home, ".config", "opencode", "opencode.jsonc")) {
+        return '{ "plugin": ["context-mode"] }';
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as typeof fs.readFileSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("medium");
+    expect(signal.reason).toContain("context-mode");
+  });
+
+  it("keeps https URLs intact while parsing OpenCode JSONC plugin config", () => {
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    readFileSyncMock.mockImplementation(((p: unknown) => {
+      if (p === resolve(home, ".config", "opencode", "opencode.jsonc")) {
+        return '{"$schema":"https://opencode.ai/config.json","plugin":["context-mode"]}';
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as typeof fs.readFileSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("medium");
+    expect(signal.reason).toContain("context-mode");
+  });
+
+  it("keeps string commas before braces and brackets intact while parsing OpenCode JSONC", () => {
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    readFileSyncMock.mockImplementation(((p: unknown) => {
+      if (p === resolve(home, ".config", "opencode", "opencode.jsonc")) {
+        return '{"note":"keep ,} and ,] inside strings","plugin":["context-mode",]}';
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as typeof fs.readFileSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("medium");
+    expect(signal.reason).toContain("context-mode");
+  });
+
+  it("keeps real Claude Code env marker above OpenCode config", () => {
+    process.env.CLAUDE_CODE_ENTRYPOINT = "cli";
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("claude-code");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("keeps real Claude Code plugin install above OpenCode config", () => {
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".claude", "plugins", "installed_plugins.json") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    readFileSyncMock.mockImplementation(((p: unknown) => {
+      if (p === resolve(home, ".claude", "plugins", "installed_plugins.json")) {
+        return '{ "plugins": { "context-mode@context-mode": {} } }';
+      }
+      if (p === resolve(home, ".config", "opencode", "opencode.jsonc")) {
+        return '{ "plugin": ["context-mode"] }';
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as typeof fs.readFileSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("claude-code");
+    expect(signal.confidence).toBe("medium");
+  });
+
+  it("does not prefer OpenCode config without context-mode plugin over ~/.claude", () => {
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    readFileSyncMock.mockImplementation(((p: unknown) => {
+      if (p === resolve(home, ".config", "opencode", "opencode.jsonc")) {
+        return '{ "plugin": ["other-plugin"] }';
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as typeof fs.readFileSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("claude-code");
+    expect(signal.confidence).toBe("medium");
+  });
+
+  it("does not let malformed OpenCode config beat bare ~/.claude", () => {
+    existsSyncMock.mockImplementation(((p: unknown) =>
+      p === resolve(home, ".claude") ||
+      p === resolve(home, ".config", "opencode") ||
+      p === resolve(home, ".config", "opencode", "opencode.jsonc")) as typeof fs.existsSync);
+
+    readFileSyncMock.mockImplementation(((p: unknown) => {
+      if (p === resolve(home, ".config", "opencode", "opencode.jsonc")) {
+        return '{"$schema":"https://opencode.ai/config.json","plugin":["context-mode",]';
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as typeof fs.readFileSync);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("claude-code");
+    expect(signal.confidence).toBe("medium");
   });
 
   it("env var wins over a matching config dir", () => {
@@ -169,11 +309,15 @@ describe("detectPlatform — env var priority chain", () => {
     savedEnv = { ...process.env };
     for (const v of ALL_PLATFORM_ENV_VARS) delete process.env[v];
     existsSyncMock.mockReturnValue(false);
+    readFileSyncMock.mockReset();
+    __resetClaudeCodePluginCacheForTests();
   });
 
   afterEach(() => {
     process.env = savedEnv;
     existsSyncMock.mockReset();
+    readFileSyncMock.mockReset();
+    __resetClaudeCodePluginCacheForTests();
   });
 
   it("CLAUDE beats GEMINI when both envs are set", () => {

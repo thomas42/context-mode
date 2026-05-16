@@ -16,13 +16,6 @@
  *   - Session dir: ~/.config/opencode/context-mode/sessions/
  */
 
-/** Strip JSONC comments (// and /* *​/) and trailing commas for JSON.parse. */
-function stripJsonComments(str: string): string {
-  return str
-    .replace(/\/\/.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/,(\s*[}\]])/g, "$1");
-}
 import {
   readFileSync,
   writeFileSync,
@@ -35,6 +28,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { stripJsonComments } from "../../util/jsonc.js";
 
 import type {
   HookAdapter,
@@ -345,7 +339,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
 
         const isGlobalConfig = globalPaths.has(configPath);
 
-        if (this.hasContextModePlugin(settings) || isGlobalConfig) {
+        if (this.hasContextModePlugin(settings) || this.hasContextModeMcp(settings) || isGlobalConfig) {
           this.settingsPath = configPath;
           return settings;
         }
@@ -386,7 +380,6 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       return results;
     }
 
-    // Check for "context-mode" in plugin array
     const hasPlugin = this.hasContextModePlugin(settings);
     if (Array.isArray(settings.plugin)) {
       results.push({
@@ -404,6 +397,26 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
         check: "Plugin registration",
         status: "fail",
         message: `No plugin array found in ${this.platform}.json or ${this.platform}.jsonc`,
+        fix: "context-mode upgrade",
+      });
+    }
+
+    const hasMcp = this.hasContextModeMcp(settings);
+    const mcp = settings.mcp;
+    if (mcp && typeof mcp === "object" && !Array.isArray(mcp)) {
+      results.push({
+        check: "MCP server registration",
+        status: hasMcp ? "pass" : "fail",
+        message: hasMcp
+          ? "context-mode found in mcp config"
+          : "context-mode not found in mcp config; ctx_* tools will report Not connected",
+        fix: hasMcp ? undefined : "context-mode upgrade",
+      });
+    } else {
+      results.push({
+        check: "MCP server registration",
+        status: "fail",
+        message: `No mcp object found in ${this.platform}.json or ${this.platform}.jsonc; ctx_* tools will report Not connected`,
         fix: "context-mode upgrade",
       });
     }
@@ -430,10 +443,14 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     }
 
     if (this.hasContextModePlugin(settings)) {
+      const hasMcp = this.hasContextModeMcp(settings);
       return {
         check: "Plugin registration",
-        status: "pass",
-        message: "context-mode found in plugin array",
+        status: hasMcp ? "pass" : "warn",
+        message: hasMcp
+          ? "context-mode found in plugin array and mcp config"
+          : "context-mode found in plugin array, but mcp config is missing; ctx_* tools will report Not connected",
+        fix: hasMcp ? undefined : "context-mode upgrade",
       };
     }
 
@@ -480,6 +497,23 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     }
 
     settings.plugin = plugins;
+
+    const mcp = settings.mcp;
+    const mcpConfig: Record<string, unknown> =
+      mcp && typeof mcp === "object" && !Array.isArray(mcp)
+        ? { ...(mcp as Record<string, unknown>) }
+        : {};
+    if (this.hasContextModeMcp({ mcp: mcpConfig })) {
+      changes.push("context-mode MCP server already configured");
+    } else {
+      mcpConfig["context-mode"] = {
+        type: "local",
+        command: ["context-mode"],
+      };
+      changes.push("Added context-mode MCP server");
+    }
+    settings.mcp = mcpConfig;
+
     this.writeSettings(settings);
     return changes;
   }
@@ -520,6 +554,22 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
   private hasContextModePlugin(settings: Record<string, unknown>): boolean {
     const plugins = settings.plugin;
     return Array.isArray(plugins) && plugins.some((p: unknown) => typeof p === "string" && p.includes("context-mode"));
+  }
+
+  /**
+   * Check whether a settings object registers the context-mode MCP server.
+   */
+  private hasContextModeMcp(settings: Record<string, unknown>): boolean {
+    const mcp = settings.mcp;
+    if (!mcp || typeof mcp !== "object" || Array.isArray(mcp)) return false;
+    return Object.entries(mcp as Record<string, unknown>).some(([name, value]) => {
+      if (name.includes("context-mode")) return true;
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const command = (value as Record<string, unknown>).command;
+      return Array.isArray(command)
+        ? command.some((part) => typeof part === "string" && part.includes("context-mode"))
+        : typeof command === "string" && command.includes("context-mode");
+    });
   }
 
   /**

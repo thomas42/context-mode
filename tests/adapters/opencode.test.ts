@@ -218,10 +218,18 @@ describe("OpenCodeAdapter", () => {
       expect(run.status).toBe(0);
       expect(JSON.parse(run.stdout)).toEqual({
         backup: file + ".bak",
-        changes: ["Added context-mode to plugin array"],
+        changes: ["Added context-mode to plugin array", "Added context-mode MCP server"],
       });
       expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
-      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
+        plugin: ["context-mode"],
+        mcp: {
+          "context-mode": {
+            type: "local",
+            command: ["context-mode"],
+          },
+        },
+      });
 
       rmSync(root, { recursive: true, force: true });
     });
@@ -320,6 +328,51 @@ describe("OpenCodeAdapter", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("readSettings preserves URLs and string punctuation in opencode.jsonc", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "opencode.jsonc"),
+        `{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["context-mode"],
+  "note": "keep // and trailing comma text ,]",
+  "mcp": {
+    "context-mode": {
+      "type": "local",
+      "command": ["context-mode"],
+    },
+  },
+}
+`,
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.readSettings()))`,
+        ],
+        { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
+      );
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({
+        $schema: "https://opencode.ai/config.json",
+        plugin: ["context-mode"],
+        note: "keep // and trailing comma text ,]",
+        mcp: {
+          "context-mode": {
+            type: "local",
+            command: ["context-mode"],
+          },
+        },
+      });
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("prefers opencode.json over opencode.jsonc when both exist", () => {
       const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
       const dir = join(root, "project");
@@ -366,11 +419,49 @@ describe("OpenCodeAdapter", () => {
         { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
       );
       expect(run.status).toBe(0);
-      expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
+      expect(JSON.parse(run.stdout)).toEqual([
+        "Added context-mode to plugin array",
+        "Added context-mode MCP server",
+      ]);
       // Should write back to .jsonc (same file it read)
       expect(JSON.parse(readFileSync(join(dir, "opencode.jsonc"), "utf-8"))).toEqual({
         plugin: ["context-mode"],
+        mcp: {
+          "context-mode": {
+            type: "local",
+            command: ["context-mode"],
+          },
+        },
       });
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("validateHooks reports missing MCP registration separately from plugin hooks", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "opencode.json"), JSON.stringify({ plugin: ["context-mode"] }, null, 2));
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.validateHooks('/tmp')))`,
+        ],
+        { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
+      );
+      expect(run.status).toBe(0);
+      const results = JSON.parse(run.stdout);
+      const pluginCheck = results.find((r: { check: string }) => r.check === "Plugin registration");
+      const mcpCheck = results.find((r: { check: string }) => r.check === "MCP server registration");
+      expect(pluginCheck.status).toBe("pass");
+      expect(mcpCheck).toMatchObject({
+        status: "fail",
+        fix: "context-mode upgrade",
+      });
+      expect(mcpCheck.message).toContain("Not connected");
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -423,9 +514,20 @@ describe("OpenCodeAdapter", () => {
       );
 
       expect(run.status).toBe(0);
-      expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
+      expect(JSON.parse(run.stdout)).toEqual([
+        "Added context-mode to plugin array",
+        "Added context-mode MCP server",
+      ]);
       expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
-      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
+        plugin: ["context-mode"],
+        mcp: {
+          "context-mode": {
+            type: "local",
+            command: ["context-mode"],
+          },
+        },
+      });
 
       rmSync(root, { recursive: true, force: true });
     });

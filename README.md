@@ -443,7 +443,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 
 4. Restart OpenCode.
 
-**Verify:** In the OpenCode session, type `ctx stats`. Context-mode tools should appear and respond.
+**Verify:** Run `context-mode doctor` and confirm both `Plugin registration` and `MCP server registration` pass. Then restart OpenCode and type `ctx stats` in the OpenCode session. If the MCP registration is missing, OpenCode can still load the plugin hooks while `ctx_*` tools report `Not connected`.
 
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
@@ -491,7 +491,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 
 4. Restart KiloCode.
 
-**Verify:** In the KiloCode session, type `ctx stats`. Context-mode tools should appear and respond.
+**Verify:** Run `context-mode doctor` and confirm both `Plugin registration` and `MCP server registration` pass. Then restart KiloCode and type `ctx stats` in the KiloCode session. If the MCP registration is missing, KiloCode can still load the plugin hooks while `ctx_*` tools report `Not connected`.
 
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
@@ -1232,9 +1232,12 @@ ctx insight     → personal analytics dashboard (opens local web UI)
 **From your terminal** — run directly without an AI session:
 
 ```bash
+context-mode --help
+context-mode --version
 context-mode doctor
 context-mode upgrade
 context-mode insight          # opens analytics dashboard in browser
+context-mode insight --port 4748
 bash scripts/ctx-debug.sh    # full diagnostic report for bug reports
 ```
 

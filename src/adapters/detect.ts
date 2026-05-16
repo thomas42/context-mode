@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 
 import type { PlatformId, DetectionSignal, HookAdapter } from "./types.js";
 import { CLIENT_NAME_TO_PLATFORM } from "./client-map.js";
+import { stripJsonComments } from "../util/jsonc.js";
 
 /**
  * Issue #539 — fallback disambiguator. When env-var detection would
@@ -40,6 +41,9 @@ import { CLIENT_NAME_TO_PLATFORM } from "./client-map.js";
  */
 type PluginCache = { hasCM: boolean } | "miss" | null;
 let claudeCodePluginCache: PluginCache = null;
+
+type OpenCodeConfigCache = { hasCM: boolean } | "miss" | null;
+let opencodeConfigCache: OpenCodeConfigCache = null;
 
 function claudeCodeHasContextModePlugin(): boolean {
   if (claudeCodePluginCache !== null) {
@@ -65,9 +69,61 @@ function claudeCodeHasContextModePlugin(): boolean {
   }
 }
 
+function opencodeConfigHasContextModePlugin(): boolean {
+  if (opencodeConfigCache !== null) {
+    return opencodeConfigCache !== "miss" && opencodeConfigCache.hasCM;
+  }
+
+  try {
+    const paths = [
+      resolve(homedir(), ".config", "opencode", "opencode.json"),
+      resolve(homedir(), ".config", "opencode", "opencode.jsonc"),
+    ];
+
+    for (const path of paths) {
+      if (!existsSync(path)) continue;
+      const raw = readFileSync(path, "utf-8");
+      const parsed = JSON.parse(stripJsonComments(raw)) as {
+        plugin?: unknown;
+        mcp?: unknown;
+      };
+      const plugins = Array.isArray(parsed.plugin) ? parsed.plugin : [];
+      const hasCMPlugin = plugins.some(
+        (plugin) => typeof plugin === "string" && plugin.includes("context-mode"),
+      );
+      const mcp = parsed.mcp;
+      const hasCMMcp = !!mcp && typeof mcp === "object" && !Array.isArray(mcp)
+        && Object.entries(mcp as Record<string, unknown>).some(([name, value]) => {
+          if (name.includes("context-mode")) return true;
+          if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+          const command = (value as Record<string, unknown>).command;
+          return Array.isArray(command)
+            ? command.some((part) => typeof part === "string" && part.includes("context-mode"))
+            : typeof command === "string" && command.includes("context-mode");
+        });
+      const hasCM = hasCMPlugin || hasCMMcp;
+      if (hasCM) {
+        opencodeConfigCache = { hasCM: true };
+        return true;
+      }
+    }
+
+    opencodeConfigCache = { hasCM: false };
+    return false;
+  } catch {
+    opencodeConfigCache = "miss";
+    return false;
+  }
+}
+
 /** Test-only: reset the installed_plugins.json memo so each test starts cold. */
 export function __resetClaudeCodePluginCacheForTests(): void {
   claudeCodePluginCache = null;
+}
+
+/** Test-only: reset the OpenCode config memo so each test starts cold. */
+export function __resetOpenCodeConfigCacheForTests(): void {
+  opencodeConfigCache = null;
 }
 
 /**
@@ -428,6 +484,22 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   // ── Medium confidence: config directory existence ──────
 
   const home = homedir();
+
+  if (claudeCodeHasContextModePlugin()) {
+    return {
+      platform: "claude-code",
+      confidence: "medium",
+      reason: "Claude Code plugin install lists context-mode",
+    };
+  }
+
+  if (opencodeConfigHasContextModePlugin()) {
+    return {
+      platform: "opencode",
+      confidence: "medium",
+      reason: "OpenCode config includes context-mode plugin",
+    };
+  }
 
   if (existsSync(resolve(home, ".claude"))) {
     return {
