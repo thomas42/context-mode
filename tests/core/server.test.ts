@@ -1525,6 +1525,18 @@ describe("ctx_insight: execFile migration source guard (#441)", () => {
     expect(serverSrc).toMatch(/export type KillResult\b/);
   });
 
+  test("ctx_insight health check requires /api/stores, not only /api/overview", () => {
+    const insightMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_insight"[\s\S]*?^\);/m,
+    );
+    expect(insightMatch).not.toBeNull();
+    const insightBody = insightMatch![0];
+    expect(serverSrc).toContain("/api/stores");
+    expect(serverSrc).toContain("stale-insight");
+    expect(insightBody).toContain("probeInsightPort");
+    expect(insightBody).not.toMatch(/127\.0\.0\.1:\$\{port\}\/api\/overview/);
+  });
+
   test("port schema is bounded to a valid TCP port range", () => {
     const portDecl = serverSrc.match(/port:\s*z\.coerce\.number\(\)([^,\n]*)\.optional\(\)/);
     expect(portDecl).not.toBeNull();

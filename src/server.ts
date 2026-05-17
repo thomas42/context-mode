@@ -3449,6 +3449,8 @@ export type KillResult = {
   errors: string[];
 };
 
+type InsightPortState = "free" | "current" | "stale-insight" | "occupied";
+
 // Hard upper bound on every helper-internal spawnSync call. Caps tail-latency
 // when an external binary hangs (xdg-open waiting for an X11 session, lsof
 // stalling on /proc, taskkill blocking on an unresponsive process, etc.) so
@@ -3621,6 +3623,44 @@ export function killProcessOnPort(
   return result;
 }
 
+function readLocalHttp(url: string, timeout = 1500): Promise<{ contentType: string; body: string } | null> {
+  return new Promise((resolve) => {
+    import("node:http").then(({ request }) => {
+      const req = request(url, { timeout }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            contentType: String(res.headers["content-type"] || ""),
+            body: Buffer.concat(chunks).toString("utf-8"),
+          });
+        });
+      });
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => {
+        req.destroy();
+        resolve(null);
+      });
+      req.end();
+    }).catch(() => resolve(null));
+  });
+}
+
+async function probeInsightPort(port: number): Promise<InsightPortState> {
+  const stores = await readLocalHttp(`http://127.0.0.1:${port}/api/stores`);
+  if (stores === null) return "free";
+  if (stores.contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(stores.body);
+      if (Array.isArray(parsed?.stores)) return "current";
+    } catch {}
+  }
+
+  const overview = await readLocalHttp(`http://127.0.0.1:${port}/api/overview`);
+  if (overview?.contentType.includes("application/json")) return "stale-insight";
+  return "occupied";
+}
+
 // ── ctx-insight: analytics dashboard ──────────────────────────────────────────
 server.registerTool(
   "ctx_insight",
@@ -3707,27 +3747,20 @@ server.registerTool(
       });
       steps.push("Build complete.");
 
-      // Pre-check: is port already in use?
-      let portOccupied = false;
-      try {
-        const { request } = await import("node:http");
-        await new Promise<void>((resolve, reject) => {
-          const req = request(`http://127.0.0.1:${port}/api/overview`, { timeout: 2000 }, (res) => {
-            res.resume();
-            resolve(); // port is responding = already running
-          });
-          req.on("error", () => reject()); // port free
-          req.on("timeout", () => { req.destroy(); reject(); });
-          req.end();
+      const portState = await probeInsightPort(port);
+      if (portState === "current" && !sourceUpdated) {
+        steps.push("Dashboard already running.");
+        const url = `http://localhost:${port}`;
+        const open = openBrowserSync(url);
+        const tail = open.ok
+          ? ""
+          : ` (auto-open failed: ${open.reason}; navigate manually)`;
+        return trackResponse("ctx_insight", {
+          content: [{ type: "text" as const, text: `Dashboard already running at ${url}${tail}` }],
         });
-        portOccupied = true;
-      } catch {
-        // Port is free, proceed with spawn
       }
-
-      if (portOccupied && sourceUpdated) {
-        // Source was updated but stale server is running on port — kill it so fresh code runs
-        steps.push("Killing stale dashboard server (source updated)...");
+      if (portState === "stale-insight" || (portState === "current" && sourceUpdated)) {
+        steps.push("Killing stale dashboard server...");
         const kill = killProcessOnPort(port);
         if (kill.attemptedPids.length > 0 && kill.killedPids.length === 0) {
           // Tried to kill, every attempt failed (perms, race, missing binary).
@@ -3750,16 +3783,12 @@ server.registerTool(
         }
         await new Promise(r => setTimeout(r, 500)); // Wait for port to free
         steps.push(`Stale server killed (${kill.killedPids.length} pid${kill.killedPids.length === 1 ? "" : "s"}).`);
-      } else if (portOccupied) {
-        // Source unchanged, server is running fine — just open browser
-        steps.push("Dashboard already running.");
-        const url = `http://localhost:${port}`;
-        const open = openBrowserSync(url);
-        const tail = open.ok
-          ? ""
-          : ` (auto-open failed: ${open.reason}; navigate manually)`;
+      } else if (portState === "occupied") {
         return trackResponse("ctx_insight", {
-          content: [{ type: "text" as const, text: `Dashboard already running at ${url}${tail}` }],
+          content: [{
+            type: "text" as const,
+            text: `Port ${port} is in use by another service. Try ctx_insight({ port: ${port + 1} }) or stop the process manually.`,
+          }],
         });
       }
 
@@ -3794,16 +3823,8 @@ server.registerTool(
 
       // Verify server is actually running
       try {
-        const { request } = await import("node:http");
-        await new Promise<void>((resolve, reject) => {
-          const req = request(`http://127.0.0.1:${port}/api/overview`, { timeout: 3000 }, (res) => {
-            resolve();
-            res.resume();
-          });
-          req.on("error", reject);
-          req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
-          req.end();
-        });
+        const state = await probeInsightPort(port);
+        if (state !== "current") throw new Error(`unexpected port state: ${state}`);
       } catch {
         // Server didn't start — likely port in use
         return trackResponse("ctx_insight", {

@@ -16,6 +16,7 @@
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execFileSync, execSync, execFile as nodeExecFile, type ExecSyncOptions } from "node:child_process";
+import type { IncomingMessage } from "node:http";
 import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, mkdirSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
@@ -257,6 +258,73 @@ export function openInBrowser(
     } catch { /* try next fallback */ }
   }
   if (!opened) hint();
+}
+
+type InsightPortState = "free" | "current" | "stale-insight" | "occupied";
+
+function readHttp(url: string, timeout = 1500): Promise<{ status: number; contentType: string; body: string } | null> {
+  return new Promise((resolve) => {
+    import("node:http").then(({ request }) => {
+      const req = request(url, { timeout }, (res: IncomingMessage) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode || 0,
+            contentType: String(res.headers["content-type"] || ""),
+            body: Buffer.concat(chunks).toString("utf-8"),
+          });
+        });
+      });
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => {
+        req.destroy();
+        resolve(null);
+      });
+      req.end();
+    }).catch(() => resolve(null));
+  });
+}
+
+async function probeInsightPort(port: number): Promise<InsightPortState> {
+  const stores = await readHttp(`http://127.0.0.1:${port}/api/stores`);
+  if (stores === null) return "free";
+  if (stores.contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(stores.body);
+      if (Array.isArray(parsed?.stores)) return "current";
+    } catch {}
+  }
+
+  const overview = await readHttp(`http://127.0.0.1:${port}/api/overview`);
+  if (overview?.contentType.includes("application/json")) return "stale-insight";
+  return "occupied";
+}
+
+function killProcessOnPortCli(port: number): boolean {
+  try {
+    if (process.platform === "win32") {
+      const netstat = execFileSync("netstat", ["-ano"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+      const pids = new Set<string>();
+      for (const rawLine of netstat.split(/\r?\n/)) {
+        const tokens = rawLine.trim().split(/\s+/);
+        if (tokens.length < 5 || tokens[0] !== "TCP") continue;
+        if (!tokens[1].endsWith(`:${port}`)) continue;
+        if (tokens[2] !== "0.0.0.0:0" && tokens[2] !== "[::]:0") continue;
+        const pid = tokens[tokens.length - 1];
+        if (/^\d+$/.test(pid)) pids.add(pid);
+      }
+      for (const pid of pids) execFileSync("taskkill", ["/F", "/PID", pid], { stdio: "ignore" });
+      return pids.size > 0;
+    }
+
+    const out = execFileSync("lsof", ["-ti", `:${port}`], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    const pids = out.split(/\r?\n/).filter((pid) => /^\d+$/.test(pid));
+    for (const pid of pids) execFileSync("kill", [pid], { stdio: "ignore" });
+    return pids.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function defaultPluginRoot(): string {
@@ -732,8 +800,24 @@ async function insight(port: number) {
   console.log("Building dashboard...");
   execSync("npx vite build", { cwd: cacheDir, stdio: "pipe", timeout: 60000 });
 
-  // Start server
   const url = `http://localhost:${port}`;
+  const portState = await probeInsightPort(port);
+  if (portState === "current") {
+    console.log(`\n  context-mode Insight\n  ${url}\n`);
+    openInBrowser(url);
+    return;
+  }
+  if (portState === "stale-insight") {
+    console.log("Replacing stale Insight server...");
+    if (!killProcessOnPortCli(port)) {
+      throw new Error(`Could not stop stale Insight server on port ${port}`);
+    }
+    await new Promise(r => setTimeout(r, 500));
+  } else if (portState === "occupied") {
+    throw new Error(`Port ${port} is in use by another service. Use a different port: context-mode insight ${port + 1}`);
+  }
+
+  // Start server
   console.log(`\n  context-mode Insight\n  ${url}\n`);
 
   const child = spawn("node", [join(cacheDir, "server.mjs")], {
@@ -752,16 +836,8 @@ async function insight(port: number) {
   await new Promise(r => setTimeout(r, 1500));
 
   try {
-    const { request } = await import("node:http");
-    await new Promise<void>((resolve, reject) => {
-      const req = request(`http://127.0.0.1:${port}/api/overview`, { timeout: 3000 }, (res) => {
-        resolve();
-        res.resume();
-      });
-      req.on("error", reject);
-      req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
-      req.end();
-    });
+    const state = await probeInsightPort(port);
+    if (state !== "current") throw new Error(`unexpected port state: ${state}`);
   } catch {
     console.error(`\nError: Port ${port} appears to be in use. Either a previous dashboard is still running, or another service is using this port.`);
     console.error(`\nTo fix:`);

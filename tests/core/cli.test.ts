@@ -214,6 +214,17 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(src).toMatch(/items\s*=\s*\[[\s\S]*?"cli\.bundle\.mjs"/);
   });
 
+  it("cli.ts insight treats /api/stores as the dashboard health check", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const insightStart = src.indexOf("async function insight");
+    expect(insightStart).toBeGreaterThan(-1);
+    const insightSrc = src.slice(insightStart);
+    expect(src).toContain("/api/stores");
+    expect(insightSrc).toContain("probeInsightPort");
+    expect(insightSrc).not.toMatch(/127\.0\.0\.1:\$\{port\}\/api\/overview/);
+    expect(insightSrc).toContain("Replacing stale Insight server");
+  });
+
   it("cli.ts upgrade doctor call prefers cli.bundle.mjs with fallback", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     expect(src).toContain("cli.bundle.mjs");
