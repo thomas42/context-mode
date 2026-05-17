@@ -326,6 +326,7 @@ check "hooks/pretooluse.mjs exists" "$([ -f "$PLUGIN_ROOT/hooks/pretooluse.mjs" 
 check "hooks/sessionstart.mjs exists" "$([ -f "$PLUGIN_ROOT/hooks/sessionstart.mjs" ] && echo true || echo false)"
 check "server.bundle.mjs exists" "$([ -f "$PLUGIN_ROOT/server.bundle.mjs" ] && echo true || echo false)"
 check "cli.bundle.mjs exists" "$([ -f "$PLUGIN_ROOT/cli.bundle.mjs" ] && echo true || echo false)"
+check "ctx.bundle.mjs exists" "$([ -f "$PLUGIN_ROOT/ctx.bundle.mjs" ] && echo true || echo false)"
 
 # npm latest
 NPM_LATEST="$(safe_cmd_quiet npm view context-mode version 2>/dev/null)"

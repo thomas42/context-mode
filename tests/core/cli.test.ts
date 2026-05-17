@@ -8,12 +8,13 @@
  */
 import { describe, it, test, expect, beforeEach, afterEach } from "vitest";
 import { strict as assert } from "node:assert";
-import { readFileSync, existsSync, accessSync, constants, mkdirSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, accessSync, constants, mkdirSync, writeFileSync, rmSync, readdirSync, utimesSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { execSync, spawnSync } from "node:child_process";
 import { toUnixPath } from "../../src/cli.js";
+import { isInsightCacheStale } from "../../src/util/insight-cache.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 
@@ -27,6 +28,15 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(pkg.files).toContain("cli.bundle.mjs");
   });
 
+  it("package.json exposes ctx as a separate human CLI binary", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.bin).toMatchObject({
+      "context-mode": "./cli.bundle.mjs",
+      ctx: "./ctx.bundle.mjs",
+    });
+    expect(pkg.files).toContain("ctx.bundle.mjs");
+  });
+
   it("package.json files field includes statusline bin", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.files).toContain("bin");
@@ -36,6 +46,8 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts.bundle).toContain("cli.bundle.mjs");
     expect(pkg.scripts.bundle).toContain("src/cli.ts");
+    expect(pkg.scripts.bundle).toContain("ctx.bundle.mjs");
+    expect(pkg.scripts.bundle).toContain("src/ctx.ts");
   });
 
   // ── Bundle artifact ────────────────────────────────────────
@@ -57,23 +69,24 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(shebangsAfterLine1).toHaveLength(0);
   });
 
-  it("cli.bundle.mjs --help prints CLI usage instead of starting the MCP server", () => {
-    const result = spawnSync(process.execPath, [resolve(ROOT, "cli.bundle.mjs"), "--help"], {
+  it("ctx.bundle.mjs --help prints the human CLI usage", () => {
+    const result = spawnSync(process.execPath, [resolve(ROOT, "ctx.bundle.mjs"), "--help"], {
       encoding: "utf-8",
       timeout: 2000,
     });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Usage:");
-    expect(result.stdout).toContain("context-mode doctor");
-    expect(result.stdout).toContain("context-mode insight --port PORT");
+    expect(result.stdout).toContain("ctx doctor");
+    expect(result.stdout).toContain("ctx insight [--port PORT]");
     expect(result.stdout).toContain("ctx stats");
+    expect(result.stdout).toContain("ctx stores");
     expect(result.stderr).toBe("");
   });
 
-  it("cli.bundle.mjs --version prints the package version", () => {
+  it("ctx.bundle.mjs --version prints the package version", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
-    const result = spawnSync(process.execPath, [resolve(ROOT, "cli.bundle.mjs"), "--version"], {
+    const result = spawnSync(process.execPath, [resolve(ROOT, "ctx.bundle.mjs"), "--version"], {
       encoding: "utf-8",
       timeout: 2000,
     });
@@ -81,6 +94,107 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(pkg.version);
     expect(result.stderr).toBe("");
+  });
+
+  it("ctx.bundle.mjs stores reports no stores for an isolated HOME", () => {
+    const home = mkdtempSync(join(tmpdir(), "ctx-home-"));
+    try {
+      const result = spawnSync(process.execPath, [resolve(ROOT, "ctx.bundle.mjs"), "stores"], {
+        encoding: "utf-8",
+        timeout: 2000,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          XDG_CONFIG_HOME: join(home, ".config"),
+        },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe("No context-mode stores found.");
+      expect(result.stderr).toBe("");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("ctx.bundle.mjs stores lists discovered adapter stores", () => {
+    const home = mkdtempSync(join(tmpdir(), "ctx-home-"));
+    try {
+      const sessions = join(home, ".codex", "context-mode", "sessions");
+      const content = join(home, ".codex", "context-mode", "content");
+      mkdirSync(sessions, { recursive: true });
+      mkdirSync(content, { recursive: true });
+      writeFileSync(join(sessions, "abc.db"), "");
+      writeFileSync(join(content, "def.db"), "");
+
+      const result = spawnSync(process.execPath, [resolve(ROOT, "ctx.bundle.mjs"), "stores"], {
+        encoding: "utf-8",
+        timeout: 2000,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          XDG_CONFIG_HOME: join(home, ".config"),
+        },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("codex");
+      expect(result.stdout).toContain("Codex CLI");
+      expect(result.stdout).toContain("1 session dbs");
+      expect(result.stdout).toContain("1 content dbs");
+      expect(result.stderr).toBe("");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("ctx.bundle.mjs stats prints a simple store list", () => {
+    const home = mkdtempSync(join(tmpdir(), "ctx-home-"));
+    try {
+      const sessions = join(home, ".codex", "context-mode", "sessions");
+      mkdirSync(sessions, { recursive: true });
+      writeFileSync(join(sessions, "abc.db"), "abc");
+
+      const result = spawnSync(process.execPath, [resolve(ROOT, "ctx.bundle.mjs"), "stats"], {
+        encoding: "utf-8",
+        timeout: 2000,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          XDG_CONFIG_HOME: join(home, ".config"),
+        },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("version:");
+      expect(result.stdout).toContain("stores: 1");
+      expect(result.stdout).toContain("- store: codex");
+      expect(result.stdout).toContain("sessions: 1");
+      expect(result.stdout).not.toContain("Your AI talks");
+      expect(result.stderr).toBe("");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("ctx.bundle.mjs doctor iterates discovered stores", () => {
+    const src = readFileSync(resolve(ROOT, "src", "ctx.ts"), "utf-8");
+    expect(src).toContain("function runDoctorAll");
+    expect(src).toContain("CONTEXT_MODE_PLATFORM");
+    expect(src).toContain("discoverContextStores");
+  });
+
+  it("ctx.bundle.mjs purge requires explicit confirmation", () => {
+    const result = spawnSync(process.execPath, [resolve(ROOT, "ctx.bundle.mjs"), "purge"], {
+      encoding: "utf-8",
+      timeout: 2000,
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Refusing to purge without --confirm");
   });
 
   // ── Source code contracts ──────────────────────────────────
@@ -92,9 +206,10 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(src).toContain('endsWith("\\\\build")');
   });
 
-  it("cli.ts upgrade copies cli.bundle.mjs to target", () => {
+  it("cli.ts upgrade copies CLI bundles to target", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     expect(src).toContain('"cli.bundle.mjs"');
+    expect(readFileSync(resolve(ROOT, "package.json"), "utf-8")).toContain('"ctx.bundle.mjs"');
     // Must be in the items array for in-place update
     expect(src).toMatch(/items\s*=\s*\[[\s\S]*?"cli\.bundle\.mjs"/);
   });
@@ -128,10 +243,9 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(refreshIdx).toBeLessThan(globalIdx);
   });
 
-  it("cli.ts upgrade chmod handles both cli binaries", () => {
+  it("cli.ts upgrade chmod handles all cli binaries", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
-    // Must chmod both build/cli.js and cli.bundle.mjs
-    expect(src).toMatch(/for\s*\(.*\["build\/cli\.js",\s*"cli\.bundle\.mjs"\]/);
+    expect(src).toMatch(/for\s*\(.*\["build\/cli\.js",\s*"cli\.bundle\.mjs",\s*"ctx\.bundle\.mjs"\]/);
   });
 
   // ── Skill files ────────────────────────────────────────────
@@ -157,6 +271,35 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     const gitignore = readFileSync(resolve(ROOT, ".gitignore"), "utf-8");
     expect(gitignore).toContain("server.bundle.mjs");
     expect(gitignore).toContain("cli.bundle.mjs");
+    expect(gitignore).toContain("ctx.bundle.mjs");
+  });
+});
+
+describe("Insight cache invalidation", () => {
+  it("treats frontend source changes as stale, not only server.mjs", () => {
+    const root = mkdtempSync(join(tmpdir(), "ctx-insight-cache-"));
+    const source = join(root, "source");
+    const cache = join(root, "cache");
+    mkdirSync(join(source, "src", "routes"), { recursive: true });
+    mkdirSync(join(cache, "src", "routes"), { recursive: true });
+
+    writeFileSync(join(source, "server.mjs"), "server");
+    writeFileSync(join(cache, "server.mjs"), "server");
+    writeFileSync(join(source, "src", "routes", "__root.tsx"), "new selector");
+    writeFileSync(join(cache, "src", "routes", "__root.tsx"), "old selector");
+
+    const oldTime = new Date("2026-01-01T00:00:00Z");
+    const newTime = new Date("2026-01-02T00:00:00Z");
+    utimesSync(join(source, "server.mjs"), oldTime, oldTime);
+    utimesSync(join(cache, "server.mjs"), oldTime, oldTime);
+    utimesSync(join(cache, "src", "routes", "__root.tsx"), oldTime, oldTime);
+    utimesSync(join(source, "src", "routes", "__root.tsx"), newTime, newTime);
+
+    try {
+      expect(isInsightCacheStale(source, cache)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1287,6 +1430,7 @@ describe("start.mjs CLI self-heal", () => {
     const legacy = [
       "server.bundle.mjs",
       "cli.bundle.mjs",
+      "ctx.bundle.mjs",
       join("hooks", "pretooluse.mjs"),
       join("hooks", "posttooluse.mjs"),
       join("hooks", "precompact.mjs"),

@@ -113,6 +113,7 @@ export function derivePluginManifest({ pkg, pluginRoot }) {
 const LEGACY_FALLBACK = Object.freeze([
   "server.bundle.mjs",
   "cli.bundle.mjs",
+  "ctx.bundle.mjs",
   join("hooks", "pretooluse.mjs"),
   join("hooks", "posttooluse.mjs"),
   join("hooks", "precompact.mjs"),

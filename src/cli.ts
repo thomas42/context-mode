@@ -4,8 +4,6 @@
  *
  * Usage:
  *   context-mode                              → Start MCP server (stdio)
- *   context-mode --help                       → Show CLI usage
- *   context-mode --version                    → Show installed version
  *   context-mode doctor                       → Diagnose runtime issues, hooks, FTS5, version
  *   context-mode upgrade                      → Fix hooks, permissions, and settings
  *   context-mode insight [port|--port <port>] → Open analytics dashboard
@@ -31,6 +29,7 @@ import {
 } from "./runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
+import { isInsightCacheStale } from "./util/insight-cache.js";
 import { parseInsightPort } from "./util/insight-port.js";
 // v1.0.128 — Issue #559 sibling MCP kill helpers (see PR-559-560-FIX-DESIGN.md).
 import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mcp.js";
@@ -144,11 +143,7 @@ async function hookDispatch(platform: string, event: string): Promise<void> {
 
 const args = process.argv.slice(2);
 
-if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
-  printHelp();
-} else if (args[0] === "--version" || args[0] === "-v" || args[0] === "version") {
-  console.log(getCliVersion());
-} else if (args[0] === "doctor") {
+if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
   // Issue #542 — accept --platform <id> from the ctx_upgrade MCP handler,
@@ -273,37 +268,6 @@ function defaultPluginRoot(): string {
     return resolve(__dirname, "..");
   }
   return __dirname;
-}
-
-function getCliVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(defaultPluginRoot(), "package.json"), "utf-8"));
-    return typeof pkg.version === "string" ? pkg.version : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
-function printHelp(): void {
-  console.log(`context-mode ${getCliVersion()}
-
-Usage:
-  context-mode                         Start MCP server on stdio
-  context-mode doctor                  Diagnose runtimes, hooks, FTS5, versions
-  context-mode upgrade [--platform ID] Update hooks and installed plugin files
-  context-mode insight [PORT]          Open Insight dashboard (default 4747)
-  context-mode insight --port PORT     Open Insight dashboard on PORT
-  context-mode hook PLATFORM EVENT     Dispatch a platform hook
-  context-mode statusline              Render status-line summary
-  context-mode --version               Print version
-  context-mode --help                  Show this help
-
-AI-session commands:
-  ctx stats
-  ctx doctor
-  ctx upgrade
-  ctx purge
-  ctx insight`);
 }
 
 // Opencode/Kilocode install plugins from npm into a per-package cache folder.
@@ -724,7 +688,7 @@ async function doctor(): Promise<number> {
 async function insight(port: number) {
   try {
   const { execSync, spawn } = await import("node:child_process");
-  const { statSync, mkdirSync, cpSync } = await import("node:fs");
+  const { mkdirSync, cpSync } = await import("node:fs");
 
   const insightSource = resolve(getPluginRoot(), "insight");
   // Detect platform + adapter for correct session/content paths
@@ -741,11 +705,8 @@ async function insight(port: number) {
 
   mkdirSync(cacheDir, { recursive: true });
 
-  // Copy source if newer
-  const srcMtime = statSync(join(insightSource, "server.mjs")).mtimeMs;
-  const cacheMtime = existsSync(join(cacheDir, "server.mjs"))
-    ? statSync(join(cacheDir, "server.mjs")).mtimeMs : 0;
-  if (srcMtime > cacheMtime) {
+  // Copy source if any Insight source file changed, not just server.mjs.
+  if (isInsightCacheStale(insightSource, cacheDir)) {
     console.log("Copying Insight source...");
     cpSync(insightSource, cacheDir, { recursive: true, force: true });
   }
@@ -1356,7 +1317,7 @@ async function upgrade(opts?: { platform?: string }) {
   // Also ensure CLI binaries are executable (tsc doesn't set +x)
   // chmod is POSIX-only — skip on Windows where execute bits are irrelevant
   if (process.platform !== "win32") {
-    for (const bin of ["build/cli.js", "cli.bundle.mjs"]) {
+    for (const bin of ["build/cli.js", "cli.bundle.mjs", "ctx.bundle.mjs"]) {
       const binPath = resolve(pluginRoot, bin);
       try {
         accessSync(binPath, constants.F_OK);
