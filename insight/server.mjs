@@ -48,8 +48,10 @@ if (isBun) {
 }
 
 // ── Paths ────────────────────────────────────────────────
-const SESSION_DIR = process.env.INSIGHT_SESSION_DIR || join(homedir(), ".claude", "context-mode", "sessions");
-const CONTENT_DIR = process.env.INSIGHT_CONTENT_DIR || join(homedir(), ".claude", "context-mode", "content");
+const DEFAULT_SESSION_DIR = process.env.INSIGHT_SESSION_DIR || join(homedir(), ".claude", "context-mode", "sessions");
+const DEFAULT_CONTENT_DIR = process.env.INSIGHT_CONTENT_DIR || join(homedir(), ".claude", "context-mode", "content");
+let ACTIVE_SESSION_DIR = DEFAULT_SESSION_DIR;
+let ACTIVE_CONTENT_DIR = DEFAULT_CONTENT_DIR;
 const DIST_DIR = join(__dirname, "dist");
 
 // ── Response cache (5min TTL) ────────────────────────────
@@ -196,6 +198,93 @@ function listDBFiles(dir) {
     .map(f => ({ name: f, path: join(dir, f), size: statSync(join(dir, f)).size }));
 }
 
+function configHome() {
+  return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+}
+
+function candidateStores() {
+  return [
+    { id: "claude-code", label: "Claude Code", platform: "claude-code", rootDir: join(homedir(), ".claude", "context-mode") },
+    { id: "codex", label: "Codex CLI", platform: "codex", rootDir: join(homedir(), ".codex", "context-mode") },
+    { id: "opencode", label: "OpenCode", platform: "opencode", rootDir: join(configHome(), "opencode", "context-mode") },
+    { id: "kilo", label: "KiloCode", platform: "kilo", rootDir: join(configHome(), "kilo", "context-mode") },
+    { id: "gemini-cli", label: "Gemini CLI", platform: "gemini-cli", rootDir: join(homedir(), ".gemini", "context-mode") },
+    { id: "cursor", label: "Cursor", platform: "cursor", rootDir: join(homedir(), ".cursor", "context-mode") },
+    { id: "vscode-copilot", label: "VS Code Copilot", platform: "vscode-copilot", rootDir: join(homedir(), ".vscode", "context-mode") },
+    { id: "jetbrains-copilot", label: "JetBrains Copilot", platform: "jetbrains-copilot", rootDir: join(configHome(), "JetBrains", "context-mode") },
+    { id: "kiro", label: "Kiro", platform: "kiro", rootDir: join(homedir(), ".kiro", "context-mode") },
+    { id: "pi", label: "Pi Coding Agent", platform: "pi", rootDir: join(homedir(), ".pi", "context-mode") },
+    { id: "omp", label: "OMP", platform: "omp", rootDir: join(homedir(), ".omp", "context-mode") },
+    { id: "openclaw", label: "OpenClaw", platform: "openclaw", rootDir: join(homedir(), ".openclaw", "context-mode") },
+    { id: "launch", label: "Launch Store", platform: "default", rootDir: dirname(DEFAULT_SESSION_DIR), sessionDir: DEFAULT_SESSION_DIR, contentDir: DEFAULT_CONTENT_DIR },
+  ];
+}
+
+function dbStats(dir) {
+  const files = listDBFiles(dir);
+  return {
+    count: files.length,
+    bytes: files.reduce((sum, file) => sum + file.size, 0),
+  };
+}
+
+function discoverStores() {
+  const seen = new Set();
+  const stores = [];
+  for (const candidate of candidateStores()) {
+    const sessionDir = candidate.sessionDir || join(candidate.rootDir, "sessions");
+    const contentDir = candidate.contentDir || join(candidate.rootDir, "content");
+    const rootDir = candidate.rootDir || dirname(sessionDir);
+    const key = `${sessionDir}\0${contentDir}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const session = dbStats(sessionDir);
+    const content = dbStats(contentDir);
+    if (!existsSync(rootDir) && session.count === 0 && content.count === 0) continue;
+    stores.push({
+      id: candidate.id,
+      label: candidate.label,
+      platform: candidate.platform,
+      rootDir,
+      sessionDir,
+      contentDir,
+      sessionDbs: session.count,
+      contentDbs: content.count,
+      totalBytes: session.bytes + content.bytes,
+    });
+  }
+  return stores.sort((a, b) => b.totalBytes - a.totalBytes || a.label.localeCompare(b.label));
+}
+
+function selectStore(storeId) {
+  const stores = discoverStores();
+  return stores.find((store) => store.id === storeId) || stores[0] || {
+    id: "default",
+    label: "Default",
+    platform: "default",
+    rootDir: dirname(DEFAULT_SESSION_DIR),
+    sessionDir: DEFAULT_SESSION_DIR,
+    contentDir: DEFAULT_CONTENT_DIR,
+    sessionDbs: 0,
+    contentDbs: 0,
+    totalBytes: 0,
+  };
+}
+
+function withStore(storeId, fn) {
+  const previousSessionDir = ACTIVE_SESSION_DIR;
+  const previousContentDir = ACTIVE_CONTENT_DIR;
+  const store = selectStore(storeId);
+  ACTIVE_SESSION_DIR = store.sessionDir;
+  ACTIVE_CONTENT_DIR = store.contentDir;
+  try {
+    return fn(store);
+  } finally {
+    ACTIVE_SESSION_DIR = previousSessionDir;
+    ACTIVE_CONTENT_DIR = previousContentDir;
+  }
+}
+
 function formatBytes(b) {
   if (b >= 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
   if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
@@ -204,7 +293,7 @@ function formatBytes(b) {
 
 function queryAllSessionDBs(fn) {
   const results = [];
-  for (const f of listDBFiles(SESSION_DIR)) {
+  for (const f of listDBFiles(ACTIVE_SESSION_DIR)) {
     const db = openDB(f.path);
     if (!db) continue;
     try { results.push(...fn(db)); } finally { db.close(); }
@@ -214,7 +303,7 @@ function queryAllSessionDBs(fn) {
 
 function queryAllContentDBs(fn) {
   const results = [];
-  for (const f of listDBFiles(CONTENT_DIR)) {
+  for (const f of listDBFiles(ACTIVE_CONTENT_DIR)) {
     const db = openDB(f.path);
     if (!db) continue;
     try { results.push(...fn(db)); } finally { db.close(); }
@@ -240,8 +329,8 @@ function isValidHash(hash) {
 // ── API Handlers ─────────────────────────────────────────
 
 function apiOverview() {
-  const contentDBs = listDBFiles(CONTENT_DIR);
-  const sessionDBs = listDBFiles(SESSION_DIR);
+  const contentDBs = listDBFiles(ACTIVE_CONTENT_DIR);
+  const sessionDBs = listDBFiles(ACTIVE_SESSION_DIR);
   let totalSources = 0, totalChunks = 0, totalContentSize = 0;
   let totalSessions = 0, totalEvents = 0, totalSessionSize = 0;
 
@@ -272,7 +361,7 @@ function apiOverview() {
 }
 
 function apiContentDBs() {
-  return listDBFiles(CONTENT_DIR).map(f => {
+  return listDBFiles(ACTIVE_CONTENT_DIR).map(f => {
     const db = openDB(f.path);
     if (!db) return { hash: f.name.replace(".db",""), size: formatBytes(f.size), sources: [], sourceCount: 0, chunkCount: 0 };
     try {
@@ -288,7 +377,7 @@ function apiContentDBs() {
 }
 
 function apiSourceChunks(dbHash, sourceId) {
-  const db = openDB(join(CONTENT_DIR, `${dbHash}.db`));
+  const db = openDB(join(ACTIVE_CONTENT_DIR, `${dbHash}.db`));
   if (!db) return [];
   try {
     return safeAll(db,
@@ -300,7 +389,7 @@ function apiSourceChunks(dbHash, sourceId) {
 
 function apiSearchAll(query) {
   const results = [];
-  for (const f of listDBFiles(CONTENT_DIR)) {
+  for (const f of listDBFiles(ACTIVE_CONTENT_DIR)) {
     const db = openDB(f.path);
     if (!db) continue;
     try {
@@ -320,7 +409,7 @@ function apiSearchAll(query) {
   // Fallback: LIKE search across content + session events
   const likeResults = [];
   const likePattern = `%${query}%`;
-  for (const f of listDBFiles(CONTENT_DIR)) {
+  for (const f of listDBFiles(ACTIVE_CONTENT_DIR)) {
     const db = openDB(f.path);
     if (!db) continue;
     try {
@@ -331,7 +420,7 @@ function apiSearchAll(query) {
       likeResults.push(...rows.map(r => ({ ...r, rank: 0, highlighted: null, dbHash: f.name.replace(".db","") })));
     } finally { db.close(); }
   }
-  for (const f of listDBFiles(SESSION_DIR)) {
+  for (const f of listDBFiles(ACTIVE_SESSION_DIR)) {
     const db = openDB(f.path);
     if (!db) continue;
     try {
@@ -348,7 +437,7 @@ function apiSearchAll(query) {
 }
 
 function apiSessionDBs() {
-  return listDBFiles(SESSION_DIR).map(f => {
+  return listDBFiles(ACTIVE_SESSION_DIR).map(f => {
     const db = openDB(f.path);
     if (!db) return { hash: f.name.replace(".db",""), size: formatBytes(f.size), sessions: [] };
     try {
@@ -366,7 +455,7 @@ function apiSessionDBs() {
 }
 
 function apiSessionEvents(dbHash, sessionId) {
-  const db = openDB(join(SESSION_DIR, `${dbHash}.db`));
+  const db = openDB(join(ACTIVE_SESSION_DIR, `${dbHash}.db`));
   if (!db) return { events: [], resume: null };
   try {
     const events = safeAll(db,
@@ -380,7 +469,7 @@ function apiSessionEvents(dbHash, sessionId) {
 
 function apiDeleteSource(dbHash, sourceId) {
   try {
-    const dbPath = join(CONTENT_DIR, `${dbHash}.db`);
+    const dbPath = join(ACTIVE_CONTENT_DIR, `${dbHash}.db`);
     const db = isBun ? new Database(dbPath) : new Database(dbPath);
     db.prepare("DELETE FROM chunks WHERE source_id = ?").run(sourceId);
     try { db.prepare("DELETE FROM chunks_trigram WHERE source_id = ?").run(sourceId); } catch {}
@@ -1115,9 +1204,13 @@ function apiCategoryAnalytics() {
 // ── Router ───────────────────────────────────────────────
 
 function route(method, pathname, params) {
+  if (pathname === "/api/stores") return { stores: discoverStores() };
+  const storeId = params.get("store") || undefined;
+  return withStore(storeId, (store) => {
+  const cachePrefix = `store:${store.id}:`;
   if (pathname === "/api/overview") return apiOverview();
-  if (pathname === "/api/analytics") return cached("analytics", apiAnalytics);
-  if (pathname === "/api/category-analytics") return cached("category-analytics", apiCategoryAnalytics);
+  if (pathname === "/api/analytics") return cached(`${cachePrefix}analytics`, apiAnalytics);
+  if (pathname === "/api/category-analytics") return cached(`${cachePrefix}category-analytics`, apiCategoryAnalytics);
   if (pathname === "/api/content") return apiContentDBs();
   if (pathname === "/api/sessions") return apiSessionDBs();
 
@@ -1142,6 +1235,7 @@ function route(method, pathname, params) {
     return apiDeleteSource(parts[3], Number(parts[5]));
   }
   return null;
+  });
 }
 
 // ── Static file serving ──────────────────────────────────

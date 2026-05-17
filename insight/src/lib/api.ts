@@ -1,5 +1,17 @@
 const API = "/api";
 
+function selectedStoreParam(): string {
+  const store = globalThis.localStorage?.getItem("ctx-insight-store");
+  return store ? `store=${encodeURIComponent(store)}` : "";
+}
+
+function withStore(path: string): string {
+  if (path === "/stores") return path;
+  const store = selectedStoreParam();
+  if (!store) return path;
+  return path.includes("?") ? `${path}&${store}` : `${path}?${store}`;
+}
+
 export interface OverviewData {
   content: { databases: number; sources: number; chunks: number; totalSize: string; totalSizeBytes: number };
   sessions: { databases: number; sessions: number; events: number; totalSize: string; totalSizeBytes: number };
@@ -12,6 +24,18 @@ export interface SessionMeta { id: string; projectDir: string; startedAt: string
 export interface SessionDB { hash: string; size: string; sizeBytes: number; sessions: SessionMeta[]; }
 export interface SessionEvent { id: number; type: string; category: string; priority: number; data: string; source_hook: string; created_at: string; }
 export interface SessionEventData { events: SessionEvent[]; resume: { snapshot: string; event_count: number; consumed: number } | null; }
+export interface ContextStore {
+  id: string;
+  label: string;
+  platform: string;
+  rootDir: string;
+  sessionDir: string;
+  contentDir: string;
+  sessionDbs: number;
+  contentDbs: number;
+  totalBytes: number;
+}
+export interface StoresData { stores: ContextStore[]; }
 
 export interface AnalyticsData {
   totals: {
@@ -125,11 +149,12 @@ export interface CategoryAnalyticsData {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(`${API}${path}`);
+  const r = await fetch(`${API}${withStore(path)}`);
   return r.json() as Promise<T>;
 }
 
 export const api = {
+  stores: () => get<StoresData>("/stores"),
   overview: () => get<OverviewData>("/overview"),
   analytics: () => get<AnalyticsData>("/analytics"),
   categoryAnalytics: () => get<CategoryAnalyticsData>("/category-analytics"),
@@ -140,5 +165,5 @@ export const api = {
   events: (dbHash: string, sessionId: string) =>
     get<SessionEventData>(`/sessions/${dbHash}/events/${encodeURIComponent(sessionId)}`),
   deleteSource: (dbHash: string, sourceId: number) =>
-    fetch(`${API}/content/${dbHash}/source/${sourceId}`, { method: "DELETE" }).then(r => r.json() as Promise<{ ok: boolean }>),
+    fetch(`${API}${withStore(`/content/${dbHash}/source/${sourceId}`)}`, { method: "DELETE" }).then(r => r.json() as Promise<{ ok: boolean }>),
 };

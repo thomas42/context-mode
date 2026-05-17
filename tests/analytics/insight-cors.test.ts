@@ -162,12 +162,16 @@ function startInsight(runtime: "node" | "bun" = "node"): { port: number; child: 
   symlinkSync(resolve(ROOT, "node_modules"), join(tempRoot, "node_modules"), "dir");
 
   const { sessionsDir, contentDir } = seedFixtureDBs(tempRoot);
+  seedFixtureDBs(join(tempRoot, ".codex", "context-mode"));
   const port = 49152 + Math.floor(Math.random() * 16383);
   const cmd = runtime === "bun" ? "bun" : "node";
   const child = spawn(cmd, [join(tempInsightDir, "server.mjs")], {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
+      HOME: tempRoot,
+      USERPROFILE: tempRoot,
+      XDG_CONFIG_HOME: join(tempRoot, ".config"),
       PORT: String(port),
       INSIGHT_SESSION_DIR: sessionsDir,
       INSIGHT_CONTENT_DIR: contentDir,
@@ -242,6 +246,20 @@ describe("Insight API same-machine cross-origin policy", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
     expect(res.headers.get("access-control-allow-methods")).toBeNull();
+  });
+
+  test("lists discovered stores and supports store switching (Node)", async () => {
+    const storesRes = await fetch(`http://127.0.0.1:${port}/api/stores`);
+    expect(storesRes.status).toBe(200);
+    const storesBody = await storesRes.json();
+    expect(storesBody.stores.some((s: { id: string }) => s.id === "launch")).toBe(true);
+    expect(storesBody.stores.some((s: { id: string }) => s.id === "codex")).toBe(true);
+
+    const overviewRes = await fetch(`http://127.0.0.1:${port}/api/overview?store=codex`);
+    expect(overviewRes.status).toBe(200);
+    const overview = await overviewRes.json();
+    expect(overview.sessions.databases).toBe(1);
+    expect(overview.content.databases).toBe(1);
   });
 
 });

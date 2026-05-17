@@ -42,6 +42,7 @@ import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
+import { isInsightCacheStale } from "./util/insight-cache.js";
 import { resolveProjectDir } from "./util/project-dir.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getConversationStats, getContentBytesAllSessions, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
@@ -3665,12 +3666,9 @@ server.registerTool(
       // Ensure cache dir
       mkdirSync(cacheDir, { recursive: true });
 
-      // Copy source files if needed (check by comparing server.mjs mtime)
-      const srcMtime = statSync(join(insightSource, "server.mjs")).mtimeMs;
-      const cacheMtime = existsSync(join(cacheDir, "server.mjs"))
-        ? statSync(join(cacheDir, "server.mjs")).mtimeMs : 0;
-
-      if (srcMtime > cacheMtime) {
+      // Copy source files if needed. Frontend-only changes live under
+      // insight/src, so server.mjs mtime alone is not a valid cache key.
+      if (isInsightCacheStale(insightSource, cacheDir)) {
         steps.push("Copying source files...");
         cpSync(insightSource, cacheDir, { recursive: true, force: true });
         steps.push("Source files copied.");

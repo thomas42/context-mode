@@ -93,7 +93,7 @@ All checks should show `[x]`. The doctor validates runtimes, hooks, FTS5, and pl
 | `/context-mode:ctx-purge` | Permanently delete all indexed content from the knowledge base. |
 | `/context-mode:ctx-insight` | Personal analytics dashboard — 90 metrics, 37 insight patterns, 4 composite scores (productivity, quality, delegation, context health) across 23 event categories. Opens a local web UI. |
 
-> **Note:** Slash commands are a Claude Code plugin feature. On other platforms, type `ctx stats`, `ctx doctor`, `ctx upgrade`, or `ctx insight` in the chat — the model calls the MCP tool automatically. See [Utility Commands](#utility-commands).
+> **Note:** Slash commands are a Claude Code plugin feature. On other platforms, type `ctx stats`, `ctx doctor`, `ctx upgrade`, or `ctx insight` in the chat so the model calls the MCP tool automatically. From a terminal, use the `ctx` binary directly. See [Utility Commands](#utility-commands).
 
 **Status line (optional):** Claude Code's plugin manifest cannot declare a status line, so this is a one-time manual edit to `~/.claude/settings.json`:
 
@@ -1229,21 +1229,37 @@ ctx purge       → permanently delete all indexed content from the knowledge ba
 ctx insight     → personal analytics dashboard (opens local web UI)
 ```
 
+Insight automatically discovers existing context-mode stores for Claude Code, Codex, OpenCode, KiloCode, and other supported hosts. Use the store selector in the sidebar to switch dashboards without restarting the web UI.
+
 **From your terminal** — run directly without an AI session:
 
 ```bash
-context-mode --help
-context-mode --version
-context-mode doctor
-context-mode upgrade
-context-mode insight          # opens analytics dashboard in browser
-context-mode insight --port 4748
+ctx --help
+ctx --version
+ctx stats
+ctx doctor
+ctx upgrade
+ctx purge --confirm
+ctx insight          # opens analytics dashboard in browser
+ctx insight --port 4748
+ctx stores           # list discovered Claude/Codex/OpenCode/etc. stores
 bash scripts/ctx-debug.sh    # full diagnostic report for bug reports
 ```
 
 The debug script collects OS info, runtime versions, better-sqlite3 status, adapter detection, config files (redacted), hook validation, FTS5/SQLite test, executor test, process check, session databases, and environment variables into a single pasteable markdown report.
 
-Works on **all platforms**. On Claude Code, slash commands (`/ctx-stats`, `/ctx-doctor`, `/ctx-upgrade`, `/ctx-purge`, `/ctx-insight`) are also available.
+Works on **all platforms**. `context-mode` remains the MCP stdio entrypoint; `ctx` is the human-facing terminal CLI. On Claude Code, slash commands (`/ctx-stats`, `/ctx-doctor`, `/ctx-upgrade`, `/ctx-purge`, `/ctx-insight`) are also available.
+
+**Use this checkout locally:**
+
+```bash
+npm run build
+mkdir -p ~/.local/bin
+ln -sf "$PWD/cli.bundle.mjs" ~/.local/bin/context-mode
+ln -sf "$PWD/ctx.bundle.mjs" ~/.local/bin/ctx
+```
+
+This avoids mutating npm's or Bun's global package manifest and lockfile. After linking, `command -v context-mode` and `command -v ctx` should resolve to those shims.
 
 ## Benchmarks
 

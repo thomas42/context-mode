@@ -1089,6 +1089,8 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     delete cleanEnv.GEMINI_PROJECT_DIR;
     delete cleanEnv.VSCODE_CWD;
     delete cleanEnv.OPENCODE_PROJECT_DIR;
+    delete cleanEnv.CODEX_CI;
+    delete cleanEnv.CODEX_THREAD_ID;
     delete cleanEnv.PI_PROJECT_DIR;
     delete cleanEnv.PI_WORKSPACE_DIR;
     delete cleanEnv.CONTEXT_MODE_PROJECT_DIR;
@@ -1099,6 +1101,7 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
       env: {
         ...cleanEnv,
         CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+        CONTEXT_MODE_PLATFORM: "jetbrains-copilot",
         IDEA_INITIAL_DIRECTORY: ctxProjectDir,
       },
     });
@@ -2139,7 +2142,7 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     // The inline script must copy the published package payload back, including
     // newly added files such as the statusline bin directory.
     expect(packageJson.files).toEqual(
-      expect.arrayContaining(["server.bundle.mjs", "cli.bundle.mjs", "bin"]),
+      expect.arrayContaining(["server.bundle.mjs", "cli.bundle.mjs", "ctx.bundle.mjs", "bin"]),
     );
     expect(serverSrc).toContain('readFileSync(join(T,"package.json"),"utf8")');
     expect(serverSrc).toContain("pkg.files");
@@ -4604,6 +4607,7 @@ describe("prose-style policy (#482)", () => {
     const bundlePaths = [
       "../../server.bundle.mjs",
       "../../cli.bundle.mjs",
+      "../../ctx.bundle.mjs",
       "../../hooks/session-extract.bundle.mjs",
       "../../hooks/session-snapshot.bundle.mjs",
       "../../hooks/session-db.bundle.mjs",

@@ -1,6 +1,8 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
-import { Database, Brain, History, Search, Building2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Database, Brain, History, Search, Building2, HardDrive } from "lucide-react";
 
+import { api, type ContextStore } from "@/lib/api";
 import "../styles.css";
 
 const NAV = [
@@ -16,6 +18,29 @@ export const Route = createRootRoute({
 });
 
 function RootLayout() {
+  const [stores, setStores] = useState<ContextStore[]>([]);
+  const [selectedStore, setSelectedStore] = useState(() =>
+    globalThis.localStorage?.getItem("ctx-insight-store") || "",
+  );
+
+  useEffect(() => {
+    api.stores().then((data) => {
+      setStores(data.stores);
+      const selectedStillExists = data.stores.some((store) => store.id === selectedStore);
+      if ((!selectedStore || !selectedStillExists) && data.stores[0]) {
+        const nextStore = data.stores[0].id;
+        setSelectedStore(nextStore);
+        globalThis.localStorage?.setItem("ctx-insight-store", nextStore);
+      }
+    }).catch(() => setStores([]));
+  }, []);
+
+  function changeStore(storeId: string) {
+    setSelectedStore(storeId);
+    globalThis.localStorage?.setItem("ctx-insight-store", storeId);
+    globalThis.location.reload();
+  }
+
   return (
     <div className="dark flex min-h-screen bg-background text-foreground">
       <aside className="w-56 border-r border-border bg-card fixed h-screen flex flex-col">
@@ -40,6 +65,25 @@ function RootLayout() {
             </Link>
           ))}
         </nav>
+        {stores.length > 0 && (
+          <div className="p-4 border-t border-border">
+            <label className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-2">
+              <HardDrive className="h-3.5 w-3.5" />
+              Store
+            </label>
+            <select
+              value={selectedStore}
+              onChange={(event) => changeStore(event.target.value)}
+              className="w-full rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground outline-none"
+            >
+              {stores.map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.label} ({store.sessionDbs + store.contentDbs})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="p-4 border-t border-border">
           <p className="text-[10px] text-muted-foreground/50">
             Local · Read-only
